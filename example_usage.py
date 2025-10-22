@@ -19,8 +19,8 @@ def main():
         print("set GOOGLE_MAPS_API_KEY=your_api_key_here")
         return
     
-    # Initialize the finder
-    finder = BirthdayDealsFinder(api_key)
+    # Initialize the finder with concurrent processing
+    finder = BirthdayDealsFinder(api_key, max_workers=10)
     
     # Example searches
     locations = [
@@ -35,8 +35,18 @@ def main():
         print(f"Searching for birthday deals within {radius} miles of {location}")
         print('='*80)
         
-        stores = finder.find_stores_within_radius(location, radius)
+        # Time the search
+        import time
+        start_time = time.time()
+        
+        # Use concurrent method for better performance
+        stores = finder.find_stores_within_radius_concurrent(location, radius)
+        
+        end_time = time.time()
+        search_time = end_time - start_time
+        
         finder.print_results(stores, location, radius)
+        print(f"\nSearch completed in {search_time:.2f} seconds")
 
 
 if __name__ == "__main__":
