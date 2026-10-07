@@ -3,3 +3,4 @@ geopy==2.4.1
 pandas==2.1.4
 python-dotenv==1.0.0
 aiohttp==3.9.1
+requests==2.34.2

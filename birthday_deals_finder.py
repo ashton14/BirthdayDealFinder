@@ -20,6 +20,17 @@ import aiohttp
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import requests
+
+
+PLACES_TEXT_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText'
+PLACES_FIELD_MASK = ','.join([
+    'places.id',
+    'places.formattedAddress',
+    'places.location',
+    'places.rating',
+    'places.userRatingCount',
+])
 
 
 class BirthdayDealsFinder:
@@ -31,11 +42,64 @@ class BirthdayDealsFinder:
             api_key (str): Google Maps API key
             max_workers (int): Maximum number of concurrent workers for parallel processing
         """
+        self.api_key = api_key
         self.gmaps = googlemaps.Client(key=api_key)
         self.deals_data = self._load_deals_data()
         self.max_workers = max_workers
         self._lock = threading.Lock()
-    
+
+    def _text_search(self, query: str, lat: float, lng: float, radius_meters: float) -> List[Dict]:
+        """
+        Search for places using the Places API (New) Text Search endpoint.
+
+        Args:
+            query (str): Text to search for (e.g. store name)
+            lat (float): Latitude to bias results toward
+            lng (float): Longitude to bias results toward
+            radius_meters (float): Bias radius in meters (API max is 50,000)
+
+        Returns:
+            List[Dict]: Places with name, address, lat/lng, place_id, rating and rating count
+        """
+        response = requests.post(
+            PLACES_TEXT_SEARCH_URL,
+            headers={
+                'Content-Type': 'application/json',
+                'X-Goog-Api-Key': self.api_key,
+                'X-Goog-FieldMask': PLACES_FIELD_MASK,
+            },
+            json={
+                'textQuery': query,
+                'locationBias': {
+                    'circle': {
+                        'center': {'latitude': lat, 'longitude': lng},
+                        'radius': min(radius_meters, 50000.0),
+                    }
+                },
+            },
+            timeout=10,
+        )
+        if response.status_code != 200:
+            try:
+                error = response.json().get('error', {})
+                message = f"{error.get('status', response.status_code)} ({error.get('message', '')})"
+            except ValueError:
+                message = f"HTTP {response.status_code}"
+            raise RuntimeError(message)
+
+        places = []
+        for place in response.json().get('places', []):
+            location = place.get('location', {})
+            places.append({
+                'lat': location.get('latitude'),
+                'lng': location.get('longitude'),
+                'formatted_address': place.get('formattedAddress', 'Address not available'),
+                'place_id': place.get('id', ''),
+                'rating': place.get('rating', 'N/A'),
+                'user_ratings_total': place.get('userRatingCount', 'N/A'),
+            })
+        return places
+
     def _load_deals_data(self) -> Dict[str, str]:
         """
         Load birthday deals data from CSV file.
@@ -80,18 +144,12 @@ class BirthdayDealsFinder:
         """
         found_stores = []
         try:
-            # Search for the store using Google Places API
-            places_result = self.gmaps.places(
-                query=store_name,
-                location=(search_lat, search_lng),
-                radius=radius_meters
-            )
-            
+            # Search for the store using Google Places API (New)
+            places = self._text_search(store_name, search_lat, search_lng, radius_meters)
+
             # Check each result to see if it's within our radius
-            for place in places_result.get('results', []):
-                place_lat = place['geometry']['location']['lat']
-                place_lng = place['geometry']['location']['lng']
-                place_coords = (place_lat, place_lng)
+            for place in places:
+                place_coords = (place['lat'], place['lng'])
                 
                 # Calculate actual distance
                 distance_miles = geodesic(search_coords, place_coords).miles
@@ -161,15 +219,18 @@ class BirthdayDealsFinder:
             }
             
             # Collect results as they complete
-            for future in as_completed(future_to_store):
+            total = len(future_to_store)
+            for completed, future in enumerate(as_completed(future_to_store), 1):
+                print(f"\rSearched {completed}/{total} stores...", end='', flush=True)
                 store_name = future_to_store[future]
                 try:
                     result = future.result()
                     if result:  # If stores were found
                         found_stores.extend(result)
                 except Exception as e:
-                    print(f"Error processing {store_name}: {e}")
-        
+                    print(f"\nError processing {store_name}: {e}")
+            print()
+
         # Sort by distance
         found_stores.sort(key=lambda x: x['distance_miles'])
         return found_stores
@@ -208,18 +269,12 @@ class BirthdayDealsFinder:
         # Search for each store in our deals database
         for store_name, deal in self.deals_data.items():
             try:
-                # Search for the store using Google Places API
-                places_result = self.gmaps.places(
-                    query=store_name,
-                    location=(search_lat, search_lng),
-                    radius=radius_meters
-                )
-                
+                # Search for the store using Google Places API (New)
+                places = self._text_search(store_name, search_lat, search_lng, radius_meters)
+
                 # Check each result to see if it's within our radius
-                for place in places_result.get('results', []):
-                    place_lat = place['geometry']['location']['lat']
-                    place_lng = place['geometry']['location']['lng']
-                    place_coords = (place_lat, place_lng)
+                for place in places:
+                    place_coords = (place['lat'], place['lng'])
                     
                     # Calculate actual distance
                     distance_miles = geodesic(search_coords, place_coords).miles
